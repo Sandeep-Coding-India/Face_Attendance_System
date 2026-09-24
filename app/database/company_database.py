@@ -9,7 +9,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 
-# Directory where individual company databases will be stored.
+# Directory where individual company databases are stored.
 COMPANIES_DIR = BASE_DIR / "data" / "companies"
 
 COMPANIES_DIR.mkdir(
@@ -21,9 +21,6 @@ COMPANIES_DIR.mkdir(
 def create_company_slug(company_name: str) -> str:
     """
     Convert a company name into a safe filename.
-
-    Example:
-    ABC Technologies -> abc_technologies
     """
 
     slug = company_name.lower().strip()
@@ -42,30 +39,41 @@ def create_company_slug(company_name: str) -> str:
     return slug
 
 
-def get_company_database_path(company_name: str) -> Path:
+def get_company_database_path(
+    company_name: str,
+) -> Path:
     """
     Return the SQLite database path for a company.
     """
 
-    slug = create_company_slug(company_name)
+    slug = create_company_slug(
+        company_name
+    )
 
     return COMPANIES_DIR / f"{slug}.db"
 
 
-def create_company_database(company_name: str):
+def create_company_database(
+    company_name: str,
+):
     """
-    Create a separate SQLite database for a company.
-
-    Every company gets its own database file.
+    Create or open a separate database for a company.
     """
 
-    database_path = get_company_database_path(company_name)
+    database_path = get_company_database_path(
+        company_name
+    )
 
-    database_url = f"sqlite:///{database_path.as_posix()}"
+    database_url = (
+        f"sqlite:///"
+        f"{database_path.as_posix()}"
+    )
 
     engine = create_engine(
         database_url,
-        connect_args={"check_same_thread": False},
+        connect_args={
+            "check_same_thread": False
+        },
     )
 
     CompanyBase = declarative_base()
@@ -76,15 +84,32 @@ def create_company_database(company_name: str):
         bind=engine,
     )
 
+    # Create the employee model for this company's database.
+    from app.models.employee import (
+        get_employee_model,
+    )
+
+    Employee = get_employee_model(
+        CompanyBase
+    )
+
+    # Create all company-specific tables.
+    CompanyBase.metadata.create_all(
+        bind=engine
+    )
+
     return {
         "engine": engine,
         "base": CompanyBase,
         "session_local": CompanySessionLocal,
         "database_path": database_path,
+        "Employee": Employee,
     }
 
 
-def get_company_session(company_name: str):
+def get_company_session(
+    company_name: str,
+):
     """
     Create a database session for a specific company.
     """
@@ -93,6 +118,8 @@ def get_company_session(company_name: str):
         company_name
     )
 
-    session = company_database["session_local"]()
+    session = company_database[
+        "session_local"
+    ]()
 
     return session

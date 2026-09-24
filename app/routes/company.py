@@ -1,14 +1,20 @@
-import hashlib
-import os
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
-from app.database.company_database import create_company_database
+from app.database.company_database import (
+    create_company_database,
+)
 from app.database.database import get_db
 from app.models.company import Company
+from app.security import (
+    create_access_token,
+    hash_password,
+    verify_password,
+)
 
 
 router = APIRouter(
@@ -17,30 +23,16 @@ router = APIRouter(
 )
 
 
-def hash_password(password: str) -> str:
-    """
-    Create a secure password hash using PBKDF2.
-    """
-
-    salt = os.urandom(16)
-
-    iterations = 600_000
-
-    password_hash = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt,
-        iterations,
-    )
-
-    return (
-        f"pbkdf2_sha256${iterations}$"
-        f"{salt.hex()}${password_hash.hex()}"
-    )
+security = HTTPBearer()
 
 
 class CompanyRegisterRequest(BaseModel):
     company_name: str
+    email: EmailStr
+    password: str
+
+
+class CompanyLoginRequest(BaseModel):
     email: EmailStr
     password: str
 
@@ -51,7 +43,7 @@ def register_company(
     db: Session = Depends(get_db),
 ):
     """
-    Register a company and create its separate database.
+    Register a new company and create its database.
     """
 
     company_name = request.company_name.strip()
@@ -69,7 +61,6 @@ def register_company(
             detail="Password must contain at least 6 characters.",
         )
 
-    # Check whether the company already exists.
     existing_company = (
         db.query(Company)
         .filter(
@@ -84,7 +75,6 @@ def register_company(
             detail="Company already exists.",
         )
 
-    # Check whether the email is already registered.
     existing_email = (
         db.query(Company)
         .filter(
@@ -99,23 +89,22 @@ def register_company(
             detail="Email is already registered.",
         )
 
-    # Create a separate database for this company.
     company_database = create_company_database(
         company_name
     )
 
-    database_path = company_database["database_path"]
+    database_path = company_database[
+        "database_path"
+    ]
 
     database_name = Path(
         database_path
     ).name
 
-    # Hash the password.
     password_hash = hash_password(
         request.password
     )
 
-    # Create company record in the main database.
     company = Company(
         company_name=company_name,
         email=email,
@@ -135,8 +124,60 @@ def register_company(
             "company_name": company.company_name,
             "email": company.email,
             "database_name": company.database_name,
-            "database_path": str(database_path),
             "created_at": company.created_at,
+        },
+    }
+
+
+@router.post("/login")
+def login_company(
+    request: CompanyLoginRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Login a company and return an access token.
+    """
+
+    email = str(request.email).lower().strip()
+
+    company = (
+        db.query(Company)
+        .filter(
+            Company.email == email
+        )
+        .first()
+    )
+
+    if not company:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password.",
+        )
+
+    password_valid = verify_password(
+        request.password,
+        company.password_hash,
+    )
+
+    if not password_valid:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password.",
+        )
+
+    access_token = create_access_token(
+        company.id
+    )
+
+    return {
+        "success": True,
+        "message": "Login successful.",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "company": {
+            "id": company.id,
+            "company_name": company.company_name,
+            "email": company.email,
         },
     }
 
@@ -167,4 +208,53 @@ def list_companies(
             }
             for company in companies
         ],
+    }
+
+
+@router.get("/me")
+def company_me(
+    credentials: HTTPAuthorizationCredentials = Depends(
+        security
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the currently logged-in company.
+    """
+
+    try:
+        from app.security import decode_access_token
+
+        company_id = decode_access_token(
+            credentials.credentials
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token.",
+        )
+
+    company = (
+        db.query(Company)
+        .filter(
+            Company.id == company_id
+        )
+        .first()
+    )
+
+    if not company:
+        raise HTTPException(
+            status_code=401,
+            detail="Company not found.",
+        )
+
+    return {
+        "success": True,
+        "company": {
+            "id": company.id,
+            "company_name": company.company_name,
+            "email": company.email,
+            "database_name": company.database_name,
+        },
     }
